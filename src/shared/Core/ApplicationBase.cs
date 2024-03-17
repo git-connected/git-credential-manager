@@ -1,10 +1,10 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using GitCredentialManager.UI;
 
 namespace GitCredentialManager
 {
@@ -75,41 +75,18 @@ namespace GitCredentialManager
                 Context.Trace.WriteLine("Tracing of secrets is enabled. Trace output may contain sensitive information.");
             }
 
+            // Set software rendering if defined in settings
+            if (Context.Settings.UseSoftwareRendering)
+            {
+                AvaloniaUi.Initialize(win32SoftwareRendering: true);
+            }
+
             return RunInternalAsync(args);
         }
 
         protected abstract Task<int> RunInternalAsync(string[] args);
 
         #region Helpers
-
-        public static string GetEntryApplicationPath()
-        {
-#if NETFRAMEWORK
-            // Single file publishing does not exist with .NET Framework so
-            // we can just use reflection to get the entry assembly path.
-            return Assembly.GetEntryAssembly().Location;
-#else
-            // Assembly::Location always returns an empty string if the application
-            // was published as a single file
-#pragma warning disable IL3000
-            bool isSingleFile = string.IsNullOrEmpty(Assembly.GetEntryAssembly()?.Location);
-#pragma warning restore IL3000
-
-            // Use "argv[0]" to get the full path to the entry executable in
-            // .NET 5+ when published as a single file.
-            string[] args = Environment.GetCommandLineArgs();
-            string candidatePath = args[0];
-
-            // If we have not been published as a single file then we must strip the
-            // ".dll" file extension to get the default AppHost/SuperHost name.
-            if (!isSingleFile && Path.HasExtension(candidatePath))
-            {
-                return Path.ChangeExtension(candidatePath, null);
-            }
-
-            return candidatePath;
-#endif
-        }
 
         /// <summary>
         /// Wait until a debugger has attached to the currently executing process.

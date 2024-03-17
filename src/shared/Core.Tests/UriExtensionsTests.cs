@@ -27,14 +27,13 @@ namespace GitCredentialManager.Tests
         }
 
         [Theory]
-        [InlineData("http://com")]
+        [InlineData("http://hostname", "http://hostname")]
         [InlineData("http://example.com",
             "http://example.com")]
+        [InlineData("http://hostname:7990", "http://hostname:7990")]
         [InlineData("http://foo.example.com",
             "http://foo.example.com", "http://example.com")]
         [InlineData("http://example.com/foo",
-            "http://example.com/foo", "http://example.com")]
-        [InlineData("http://example.com/foo/",
             "http://example.com/foo", "http://example.com")]
         [InlineData("http://example.com/foo?query=true#fragment",
             "http://example.com/foo", "http://example.com")]

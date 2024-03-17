@@ -7,12 +7,15 @@ using System.Threading;
 using GitCredentialManager;
 using GitCredentialManager.Authentication;
 using GitCredentialManager.Authentication.OAuth;
+using GitCredentialManager.UI;
+using GitLab.UI.ViewModels;
+using GitLab.UI.Views;
 
 namespace GitLab
 {
     public interface IGitLabAuthentication : IDisposable
     {
-        AuthenticationPromptResult GetAuthentication(Uri targetUri, string userName, AuthenticationModes modes);
+        Task<AuthenticationPromptResult> GetAuthenticationAsync(Uri targetUri, string userName, AuthenticationModes modes);
 
         Task<OAuth2TokenResult> GetOAuthTokenViaBrowserAsync(Uri targetUri, IEnumerable<string> scopes);
 
@@ -53,10 +56,10 @@ namespace GitLab
         public GitLabAuthentication(ICommandContext context)
             : base(context) { }
 
-        public AuthenticationPromptResult GetAuthentication(Uri targetUri, string userName, AuthenticationModes modes)
+        public async Task<AuthenticationPromptResult> GetAuthenticationAsync(Uri targetUri, string userName, AuthenticationModes modes)
         {
-            // If we don't have a desktop session/GUI then we cannot offer browser
-            if (!Context.SessionManager.IsDesktopSession)
+            // If we cannot start a browser then don't offer the option
+            if (!Context.SessionManager.IsWebBrowserAvailable)
             {
                 modes = modes & ~AuthenticationModes.Browser;
             }
@@ -67,11 +70,75 @@ namespace GitLab
                 throw new ArgumentException(@$"Must specify at least one {nameof(AuthenticationModes)}", nameof(modes));
             }
 
+            ThrowIfUserInteractionDisabled();
+
+            if (Context.Settings.IsGuiPromptsEnabled && Context.SessionManager.IsDesktopSession)
+            {
+                if (TryFindHelperCommand(out string helperCommand, out string args))
+                {
+                    return await GetAuthenticationViaHelperAsync(targetUri, userName, modes, helperCommand, args);
+                }
+
+                return await GetAuthenticationViaUiAsync(targetUri, userName, modes);
+            }
+
+            return GetAuthenticationViaTty(targetUri, userName, modes);
+        }
+
+        private async Task<AuthenticationPromptResult> GetAuthenticationViaUiAsync(
+            Uri targetUri, string userName, AuthenticationModes modes)
+        {
+            var viewModel = new CredentialsViewModel(Context.Environment)
+            {
+                ShowBrowserLogin = (modes & AuthenticationModes.Browser) != 0,
+                ShowTokenLogin   = (modes & AuthenticationModes.Pat) != 0,
+                ShowBasicLogin   = (modes & AuthenticationModes.Basic) != 0,
+            };
+
+            if (!GitLabConstants.IsGitLabDotCom(targetUri))
+            {
+                viewModel.Url = targetUri.ToString();
+            }
+
+            if (!string.IsNullOrWhiteSpace(userName))
+            {
+                viewModel.UserName = userName;
+                viewModel.TokenUserName = userName;
+            }
+
+            await AvaloniaUi.ShowViewAsync<CredentialsView>(viewModel, GetParentWindowHandle(), CancellationToken.None);
+
+            ThrowIfWindowCancelled(viewModel);
+
+            switch (viewModel.SelectedMode)
+            {
+                case AuthenticationModes.Basic:
+                    return new AuthenticationPromptResult(
+                        AuthenticationModes.Basic,
+                        new GitCredential(viewModel.UserName, viewModel.Password)
+                    );
+
+                case AuthenticationModes.Browser:
+                    return new AuthenticationPromptResult(AuthenticationModes.Browser);
+
+                case AuthenticationModes.Pat:
+                    return new AuthenticationPromptResult(
+                        AuthenticationModes.Pat,
+                        new GitCredential(viewModel.TokenUserName, viewModel.Token)
+                    );
+
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
+        }
+
+        private AuthenticationPromptResult GetAuthenticationViaTty(Uri targetUri, string userName, AuthenticationModes modes)
+        {
+            ThrowIfTerminalPromptsDisabled();
+
             switch (modes)
             {
                 case AuthenticationModes.Basic:
-                    ThrowIfUserInteractionDisabled();
-                    ThrowIfTerminalPromptsDisabled();
                     Context.Terminal.WriteLine("Enter GitLab credentials for '{0}'...", targetUri);
 
                     if (string.IsNullOrWhiteSpace(userName))
@@ -87,8 +154,6 @@ namespace GitLab
                     return new AuthenticationPromptResult(AuthenticationModes.Basic, new GitCredential(userName, password));
 
                 case AuthenticationModes.Pat:
-                    ThrowIfUserInteractionDisabled();
-                    ThrowIfTerminalPromptsDisabled();
                     Context.Terminal.WriteLine("Enter GitLab credentials for '{0}'...", targetUri);
 
                     if (string.IsNullOrWhiteSpace(userName))
@@ -107,11 +172,10 @@ namespace GitLab
                     return new AuthenticationPromptResult(AuthenticationModes.Browser);
 
                 case AuthenticationModes.None:
-                    throw new ArgumentOutOfRangeException(nameof(modes), @$"At least one {nameof(AuthenticationModes)} must be supplied");
+                    throw new ArgumentOutOfRangeException(nameof(modes),
+                        @$"At least one {nameof(AuthenticationModes)} must be supplied");
 
                 default:
-                    ThrowIfUserInteractionDisabled();
-                    ThrowIfTerminalPromptsDisabled();
                     var menuTitle = $"Select an authentication method for '{targetUri}'";
                     var menu = new TerminalMenu(Context.Terminal, menuTitle);
 
@@ -134,16 +198,79 @@ namespace GitLab
             }
         }
 
+        private async Task<AuthenticationPromptResult> GetAuthenticationViaHelperAsync(
+            Uri targetUri, string userName, AuthenticationModes modes, string helperCommand, string args)
+        {
+            var promptArgs = new StringBuilder(args);
+            promptArgs.Append("prompt");
+            if (!string.IsNullOrWhiteSpace(userName))
+            {
+                promptArgs.AppendFormat(" --username {0}", QuoteCmdArg(userName));
+            }
+
+            promptArgs.AppendFormat(" --url {0}", QuoteCmdArg(targetUri.ToString()));
+
+            if ((modes & AuthenticationModes.Basic) != 0) promptArgs.Append(" --basic");
+            if ((modes & AuthenticationModes.Browser) != 0) promptArgs.Append(" --browser");
+            if ((modes & AuthenticationModes.Pat) != 0) promptArgs.Append(" --pat");
+
+            IDictionary<string, string> resultDict = await InvokeHelperAsync(helperCommand, promptArgs.ToString());
+
+            if (!resultDict.TryGetValue("mode", out string responseMode))
+            {
+                throw new Trace2Exception(Context.Trace2, "Missing 'mode' in response");
+            }
+
+            switch (responseMode.ToLowerInvariant())
+            {
+                case "pat":
+                    if (!resultDict.TryGetValue("pat", out string pat))
+                    {
+                        throw new Trace2Exception(Context.Trace2, "Missing 'pat' in response");
+                    }
+
+                    if (!resultDict.TryGetValue("username", out string patUserName))
+                    {
+                        // Username is optional for PATs
+                    }
+
+                    return new AuthenticationPromptResult(
+                        AuthenticationModes.Pat, new GitCredential(patUserName, pat));
+
+                case "browser":
+                    return new AuthenticationPromptResult(AuthenticationModes.Browser);
+
+                case "basic":
+                    if (!resultDict.TryGetValue("username", out userName))
+                    {
+                        throw new Trace2Exception(Context.Trace2, "Missing 'username' in response");
+                    }
+
+                    if (!resultDict.TryGetValue("password", out string password))
+                    {
+                        throw new Trace2Exception(Context.Trace2, "Missing 'password' in response");
+                    }
+
+                    return new AuthenticationPromptResult(
+                        AuthenticationModes.Basic, new GitCredential(userName, password));
+
+                default:
+                    throw new Trace2Exception(Context.Trace2,
+                        $"Unknown mode value in response '{responseMode}'");
+            }
+        }
+
         public async Task<OAuth2TokenResult> GetOAuthTokenViaBrowserAsync(Uri targetUri, IEnumerable<string> scopes)
         {
             ThrowIfUserInteractionDisabled();
 
-            var oauthClient = new GitLabOAuth2Client(HttpClient, Context.Settings, targetUri);
+            var oauthClient = new GitLabOAuth2Client(HttpClient, Context.Settings, targetUri, Context.Trace2);
 
             // We require a desktop session to launch the user's default web browser
             if (!Context.SessionManager.IsDesktopSession)
             {
-                throw new InvalidOperationException("Browser authentication requires a desktop session");
+                throw new Trace2InvalidOperationException(Context.Trace2,
+                    "Browser authentication requires a desktop session");
             }
 
             var browserOptions = new OAuth2WebBrowserOptions { };
@@ -160,8 +287,18 @@ namespace GitLab
 
         public async Task<OAuth2TokenResult> GetOAuthTokenViaRefresh(Uri targetUri, string refreshToken)
         {
-            var oauthClient = new GitLabOAuth2Client(HttpClient, Context.Settings, targetUri);
+            var oauthClient = new GitLabOAuth2Client(HttpClient, Context.Settings, targetUri, Context.Trace2);
             return await oauthClient.GetTokenByRefreshTokenAsync(refreshToken, CancellationToken.None);
+        }
+
+        private bool TryFindHelperCommand(out string command, out string args)
+        {
+            return TryFindHelperCommand(
+                GitLabConstants.EnvironmentVariables.AuthenticationHelper,
+                GitLabConstants.GitConfiguration.Credential.AuthenticationHelper,
+                GitLabConstants.DefaultAuthenticationHelper,
+                out command,
+                out args);
         }
 
         private HttpClient _httpClient;

@@ -3,8 +3,13 @@
   <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
 
   <PropertyGroup>
-    <TargetFramework>net5.0</TargetFramework>
+    <TargetFramework>net7.0</TargetFramework>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <InstallFromSource>false</InstallFromSource>
+    <InstallPrefix>/usr/local</InstallPrefix>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,9 +23,9 @@
   <!-- Implicit SDK targets import (so we can override the default targets below) -->
   <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
 
-  <Target Name="CoreCompile" DependsOnTargets="GetBuildVersion" Condition="'$(OSPlatform)'=='linux'">
-    <Message Text="$(MSBuildProjectDirectory)\build.sh --configuration='$(Configuration)' --version='$(BuildVersion)'" Importance="High" />
-    <Exec Command="$(MSBuildProjectDirectory)\build.sh --configuration='$(Configuration)' --version='$(BuildVersion)'" />
+  <Target Name="CoreCompile" Condition="'$(OSPlatform)'=='linux'">
+    <Message Text="$(MSBuildProjectDirectory)\build.sh --install-from-source=$(InstallFromSource) --configuration='$(Configuration)' --version='$(Version)' --install-prefix='$(InstallPrefix)'" Importance="High" />
+    <Exec Command="$(MSBuildProjectDirectory)\build.sh --install-from-source=$(InstallFromSource) --configuration='$(Configuration)' --version='$(Version)' --install-prefix='$(InstallPrefix)'" />
   </Target>
 
   <Target Name="CoreClean">

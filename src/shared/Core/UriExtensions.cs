@@ -48,7 +48,7 @@ namespace GitCredentialManager
                 return false;
             }
 
-            /* According to RFC 3986 section 3.2.1 (https://tools.ietf.org/html/rfc3986#section-3.2.1)
+            /* According to RFC 3986 section 3.2.1 (https://www.rfc-editor.org/rfc/rfc3986#section-3.2.1)
              * the user information component of a URI should look like:
              *
              *     url-encode(username):url-encode(password)
@@ -88,12 +88,14 @@ namespace GitCredentialManager
 
             string schemeAndDelim = $"{uri.Scheme}{Uri.SchemeDelimiter}";
             string host = uri.Host.TrimEnd('/');
+            // If port is default, don't append
+            string port = uri.IsDefaultPort ? "" : $":{uri.Port}";
             string path = uri.AbsolutePath.Trim('/');
 
             // Unfold the path by component, right-to-left
             while (!string.IsNullOrWhiteSpace(path))
             {
-                yield return $"{schemeAndDelim}{host}/{path}";
+                yield return $"{schemeAndDelim}{host}{port}/{path}";
 
                 // Trim off the last path component
                 if (!TryTrimString(path, StringExtensions.TruncateFromLastIndexOf, '/', out path))
@@ -102,12 +104,22 @@ namespace GitCredentialManager
                 }
             }
 
+            // Check whether the URL only contains hostname.
+            // This usually means the host is on your local network.
+            if (!string.IsNullOrWhiteSpace(host) &&
+                !host.Contains("."))
+            {
+                yield return $"{schemeAndDelim}{host}{port}";
+                // If we have reached this point, there are no more subdomains to unfold, so exit early.
+                yield break;
+            }
+
             // Unfold the host by sub-domain, left-to-right
             while (!string.IsNullOrWhiteSpace(host))
             {
                 if (host.Contains(".")) // Do not emit just the TLD
                 {
-                    yield return $"{schemeAndDelim}{host}";
+                    yield return $"{schemeAndDelim}{host}{port}";
                 }
 
                 // Trim off the left-most sub-domain

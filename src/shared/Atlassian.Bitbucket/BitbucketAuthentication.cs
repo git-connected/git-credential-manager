@@ -4,9 +4,12 @@ using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Atlassian.Bitbucket.UI.ViewModels;
+using Atlassian.Bitbucket.UI.Views;
 using GitCredentialManager;
 using GitCredentialManager.Authentication;
 using GitCredentialManager.Authentication.OAuth;
+using GitCredentialManager.UI;
 
 namespace Atlassian.Bitbucket
 {
@@ -23,9 +26,9 @@ namespace Atlassian.Bitbucket
     public interface IBitbucketAuthentication : IDisposable
     {
         Task<CredentialsPromptResult> GetCredentialsAsync(Uri targetUri, string userName, AuthenticationModes modes);
-        Task<bool> ShowOAuthRequiredPromptAsync();
-        Task<OAuth2TokenResult> CreateOAuthCredentialsAsync(Uri targetUri);
-        Task<OAuth2TokenResult> RefreshOAuthCredentialsAsync(string refreshToken);
+        Task<OAuth2TokenResult> CreateOAuthCredentialsAsync(InputArguments input);
+        Task<OAuth2TokenResult> RefreshOAuthCredentialsAsync(InputArguments input, string refreshToken);
+        string GetRefreshTokenServiceName(InputArguments input);
     }
 
     public class CredentialsPromptResult
@@ -50,25 +53,24 @@ namespace Atlassian.Bitbucket
     {
         public static readonly string[] AuthorityIds =
         {
-            "bitbucket",
+            BitbucketConstants.Id,
         };
 
-        private static readonly string[] Scopes =
-        {
-            BitbucketConstants.OAuthScopes.RepositoryWrite,
-            BitbucketConstants.OAuthScopes.Account,
-        };
+        private readonly IRegistry<BitbucketOAuth2Client> _oauth2ClientRegistry;
 
         public BitbucketAuthentication(ICommandContext context)
-            : base(context) { }
+            : this(context, new OAuth2ClientRegistry(context)) { }
 
-        #region IBitbucketAuthentication
+        public BitbucketAuthentication(ICommandContext context, IRegistry<BitbucketOAuth2Client> oauth2ClientRegistry)
+    : base(context)
+        {
+            EnsureArgument.NotNull(oauth2ClientRegistry, nameof(oauth2ClientRegistry));
+            this._oauth2ClientRegistry = oauth2ClientRegistry;
+        }
 
         public async Task<CredentialsPromptResult> GetCredentialsAsync(Uri targetUri, string userName, AuthenticationModes modes)
         {
             ThrowIfUserInteractionDisabled();
-
-            string password;
 
             // If we don't have a desktop session/GUI then we cannot offer OAuth since the only
             // supported grant is authcode (i.e, using a web browser; device code is not supported).
@@ -90,132 +92,166 @@ namespace Atlassian.Bitbucket
             }
 
             // Shell out to the UI helper and show the Bitbucket u/p prompt
-            if (Context.Settings.IsGuiPromptsEnabled && Context.SessionManager.IsDesktopSession &&
-                TryFindHelperExecutablePath(out string helperPath))
+            if (Context.Settings.IsGuiPromptsEnabled && Context.SessionManager.IsDesktopSession)
             {
-                var cmdArgs = new StringBuilder("userpass");
-                if (!string.IsNullOrWhiteSpace(userName))
+                if (TryFindHelperCommand(out string helperCommand, out string args))
                 {
-                    cmdArgs.AppendFormat(" --username {0}", QuoteCmdArg(userName));
+                    return await GetCredentialsViaHelperAsync(targetUri, userName, modes, helperCommand, args);
                 }
 
-                if ((modes & AuthenticationModes.OAuth) != 0)
-                {
-                    cmdArgs.Append(" --show-oauth");
-                }
+                return await GetCredentialsViaUiAsync(targetUri, userName, modes);
+            }
 
-                IDictionary<string, string> output = await InvokeHelperAsync(helperPath, cmdArgs.ToString());
+            return GetCredentialsViaTty(targetUri, userName, modes);
+        }
 
-                if (output.TryGetValue("mode", out string mode) &&
-                    StringComparer.OrdinalIgnoreCase.Equals(mode, "oauth"))
-                {
+        private async Task<CredentialsPromptResult> GetCredentialsViaUiAsync(
+            Uri targetUri, string userName, AuthenticationModes modes)
+        {
+            var viewModel = new CredentialsViewModel(Context.Environment)
+            {
+                ShowOAuth = (modes & AuthenticationModes.OAuth) != 0,
+                ShowBasic = (modes & AuthenticationModes.Basic) != 0
+            };
+
+            if (!BitbucketHelper.IsBitbucketOrg(targetUri))
+            {
+                viewModel.Url = targetUri;
+            }
+
+            if (!string.IsNullOrWhiteSpace(userName))
+            {
+                viewModel.UserName = userName;
+            }
+
+            await AvaloniaUi.ShowViewAsync<CredentialsView>(viewModel, GetParentWindowHandle(), CancellationToken.None);
+
+            ThrowIfWindowCancelled(viewModel);
+
+            switch (viewModel.SelectedMode)
+            {
+                case AuthenticationModes.OAuth:
                     return new CredentialsPromptResult(AuthenticationModes.OAuth);
-                }
-                else
-                {
-                    if (!output.TryGetValue("username", out userName))
+
+                case AuthenticationModes.Basic:
+                    return new CredentialsPromptResult(
+                        AuthenticationModes.Basic,
+                        new GitCredential(viewModel.UserName, viewModel.Password)
+                        );
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(AuthenticationModes),
+                        "Unknown authentication mode", viewModel.SelectedMode.ToString());
+            }
+        }
+
+        private CredentialsPromptResult GetCredentialsViaTty(Uri targetUri, string userName, AuthenticationModes modes)
+        {
+            ThrowIfTerminalPromptsDisabled();
+
+            switch (modes)
+            {
+                case AuthenticationModes.Basic:
+                    Context.Terminal.WriteLine("Enter Bitbucket credentials for '{0}'...", targetUri);
+
+                    if (!string.IsNullOrWhiteSpace(userName))
                     {
-                        throw new Exception("Missing username in response");
+                        // Don't need to prompt for the username if it has been specified already
+                        Context.Terminal.WriteLine("Username: {0}", userName);
+                    }
+                    else
+                    {
+                        // Prompt for username
+                        userName = Context.Terminal.Prompt("Username");
                     }
 
-                    if (!output.TryGetValue("password", out password))
-                    {
-                        throw new Exception("Missing password in response");
-                    }
+                    // Prompt for password
+                    string password = Context.Terminal.PromptSecret("Password");
 
                     return new CredentialsPromptResult(
                         AuthenticationModes.Basic,
                         new GitCredential(userName, password));
-                }
-            }
-            else
-            {
-                ThrowIfTerminalPromptsDisabled();
 
-                switch (modes)
-                {
-                    case AuthenticationModes.Basic:
-                        Context.Terminal.WriteLine("Enter Bitbucket credentials for '{0}'...", targetUri);
+                case AuthenticationModes.OAuth:
+                    return new CredentialsPromptResult(AuthenticationModes.OAuth);
 
-                        if (!string.IsNullOrWhiteSpace(userName))
-                        {
-                            // Don't need to prompt for the username if it has been specified already
-                            Context.Terminal.WriteLine("Username: {0}", userName);
-                        }
-                        else
-                        {
-                            // Prompt for username
-                            userName = Context.Terminal.Prompt("Username");
-                        }
+                case AuthenticationModes.None:
+                    throw new ArgumentOutOfRangeException(nameof(modes),
+                        @$"At least one {nameof(AuthenticationModes)} must be supplied");
 
-                        // Prompt for password
-                        password = Context.Terminal.PromptSecret("Password");
+                default:
+                    var menuTitle = $"Select an authentication method for '{targetUri}'";
+                    var menu = new TerminalMenu(Context.Terminal, menuTitle);
 
-                        return new CredentialsPromptResult(
-                            AuthenticationModes.Basic,
-                            new GitCredential(userName, password));
+                    TerminalMenuItem oauthItem = null;
+                    TerminalMenuItem basicItem = null;
 
-                    case AuthenticationModes.OAuth:
-                        return new CredentialsPromptResult(AuthenticationModes.OAuth);
+                    if ((modes & AuthenticationModes.OAuth) != 0) oauthItem = menu.Add("OAuth");
+                    if ((modes & AuthenticationModes.Basic) != 0) basicItem = menu.Add("Username/password");
 
-                    case AuthenticationModes.None:
-                        throw new ArgumentOutOfRangeException(nameof(modes), @$"At least one {nameof(AuthenticationModes)} must be supplied");
+                    // Default to the 'first' choice in the menu
+                    TerminalMenuItem choice = menu.Show(0);
 
-                    default:
-                        var menuTitle = $"Select an authentication method for '{targetUri}'";
-                        var menu = new TerminalMenu(Context.Terminal, menuTitle);
+                    if (choice == oauthItem) goto case AuthenticationModes.OAuth;
+                    if (choice == basicItem) goto case AuthenticationModes.Basic;
 
-                        TerminalMenuItem oauthItem = null;
-                        TerminalMenuItem basicItem = null;
-
-                        if ((modes & AuthenticationModes.OAuth) != 0) oauthItem = menu.Add("OAuth");
-                        if ((modes & AuthenticationModes.Basic) != 0) basicItem = menu.Add("Username/password");
-
-                        // Default to the 'first' choice in the menu
-                        TerminalMenuItem choice = menu.Show(0);
-
-                        if (choice == oauthItem) goto case AuthenticationModes.OAuth;
-                        if (choice == basicItem) goto case AuthenticationModes.Basic;
-
-                        throw new Exception();
-                }
+                    throw new Exception();
             }
         }
 
-        public async Task<bool> ShowOAuthRequiredPromptAsync()
+        private async Task<CredentialsPromptResult> GetCredentialsViaHelperAsync(
+            Uri targetUri, string userName, AuthenticationModes modes, string helperCommand, string args)
         {
-            ThrowIfUserInteractionDisabled();
-
-            // Shell out to the UI helper and show the Bitbucket prompt
-            if (Context.Settings.IsGuiPromptsEnabled && Context.SessionManager.IsDesktopSession &&
-                TryFindHelperExecutablePath(out string helperPath))
+            var promptArgs = new StringBuilder(args);
+            promptArgs.Append("prompt");
+            if (!BitbucketHelper.IsBitbucketOrg(targetUri))
             {
-                IDictionary<string, string> output = await InvokeHelperAsync(helperPath, "oauth");
+                promptArgs.AppendFormat(" --url {0}", QuoteCmdArg(targetUri.ToString()));
+            }
 
-                if (output.TryGetValue("continue", out string continueStr) && continueStr.IsTruthy())
-                {
-                    return true;
-                }
+            if (!string.IsNullOrWhiteSpace(userName))
+            {
+                promptArgs.AppendFormat(" --username {0}", QuoteCmdArg(userName));
+            }
 
-                return false;
+            if ((modes & AuthenticationModes.Basic) != 0)
+            {
+                promptArgs.Append(" --show-basic");
+            }
+
+            if ((modes & AuthenticationModes.OAuth) != 0)
+            {
+                promptArgs.Append(" --show-oauth");
+            }
+
+            IDictionary<string, string> output = await InvokeHelperAsync(helperCommand, promptArgs.ToString());
+
+            if (output.TryGetValue("mode", out string mode) &&
+                StringComparer.OrdinalIgnoreCase.Equals(mode, "oauth"))
+            {
+                return new CredentialsPromptResult(AuthenticationModes.OAuth);
             }
             else
             {
-                ThrowIfTerminalPromptsDisabled();
+                if (!output.TryGetValue("username", out userName))
+                {
+                    throw new Trace2Exception(Context.Trace2, "Missing username in response");
+                }
 
-                Context.Terminal.WriteLine($"Your account has two-factor authentication enabled.{Environment.NewLine}" +
-                                           $"To continue you must complete authentication in your web browser.{Environment.NewLine}");
+                if (!output.TryGetValue("password", out string password))
+                {
+                    throw new Trace2Exception(Context.Trace2, "Missing password in response");
+                }
 
-                var _ = Context.Terminal.Prompt("Press enter to continue...");
-                return true;
+                return new CredentialsPromptResult(
+                    AuthenticationModes.Basic,
+                    new GitCredential(userName, password));
             }
         }
 
-        public async Task<OAuth2TokenResult> CreateOAuthCredentialsAsync(Uri targetUri)
+        public async Task<OAuth2TokenResult> CreateOAuthCredentialsAsync(InputArguments input)
         {
             ThrowIfUserInteractionDisabled();
-
-            var oauthClient = new BitbucketOAuth2Client(HttpClient, Context.Settings);
 
             var browserOptions = new OAuth2WebBrowserOptions
             {
@@ -224,43 +260,40 @@ namespace Atlassian.Bitbucket
             };
 
             var browser = new OAuth2SystemWebBrowser(Context.Environment, browserOptions);
-            var authCodeResult = await oauthClient.GetAuthorizationCodeAsync(Scopes, browser, CancellationToken.None);
+            var oauth2Client = _oauth2ClientRegistry.Get(input);
 
-            return await oauthClient.GetTokenByAuthorizationCodeAsync(authCodeResult, CancellationToken.None);
+            var authCodeResult = await oauth2Client.GetAuthorizationCodeAsync(browser, CancellationToken.None);
+            return await oauth2Client.GetTokenByAuthorizationCodeAsync(authCodeResult, CancellationToken.None);
         }
 
-        public async Task<OAuth2TokenResult> RefreshOAuthCredentialsAsync(string refreshToken)
+        public async Task<OAuth2TokenResult> RefreshOAuthCredentialsAsync(InputArguments input, string refreshToken)
         {
-            var oauthClient = new BitbucketOAuth2Client(HttpClient, Context.Settings);
-
-            return await oauthClient.GetTokenByRefreshTokenAsync(refreshToken, CancellationToken.None);
+            var client = _oauth2ClientRegistry.Get(input);
+            return await client.GetTokenByRefreshTokenAsync(refreshToken, CancellationToken.None);
         }
 
-        #endregion
-
-        #region Private Methods
-
-        private bool TryFindHelperExecutablePath(out string path)
+        public string GetRefreshTokenServiceName(InputArguments input)
         {
-            return TryFindHelperExecutablePath(
+            var client = _oauth2ClientRegistry.Get(input);
+            return client.GetRefreshTokenServiceName(input);
+        }
+
+        protected internal virtual bool TryFindHelperCommand(out string command, out string args)
+        {
+            return TryFindHelperCommand(
                 BitbucketConstants.EnvironmentVariables.AuthenticationHelper,
                 BitbucketConstants.GitConfiguration.Credential.AuthenticationHelper,
                 BitbucketConstants.DefaultAuthenticationHelper,
-                out path);
+                out command,
+                out args);
         }
 
         private HttpClient _httpClient;
         private HttpClient HttpClient => _httpClient ??= Context.HttpClientFactory.CreateClient();
 
-        #endregion
-
-        #region IDisposable
-
         public void Dispose()
         {
             _httpClient?.Dispose();
         }
-
-        #endregion
     }
 }

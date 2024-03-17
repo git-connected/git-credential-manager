@@ -4,7 +4,6 @@ using System.CommandLine;
 using System.CommandLine.Builder;
 using System.CommandLine.Invocation;
 using System.CommandLine.Parsing;
-using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -70,6 +69,18 @@ namespace GitCredentialManager
             var rootCommand = new RootCommand();
             var diagnoseCommand = new DiagnoseCommand(Context);
 
+            // Add common options
+            var noGuiOption = new Option<bool>("--no-ui", "Do not use graphical user interface prompts");
+            rootCommand.AddGlobalOption(noGuiOption);
+
+            void NoGuiOptionHandler(InvocationContext context)
+            {
+                if (context.ParseResult.HasOption(noGuiOption))
+                {
+                    Context.Settings.IsGuiPromptsEnabled = false;
+                }
+            }
+
             // Add standard commands
             rootCommand.AddCommand(new GetCommand(Context, _providerRegistry));
             rootCommand.AddCommand(new StoreCommand(Context, _providerRegistry));
@@ -91,17 +102,19 @@ namespace GitCredentialManager
             }
 
             // Trace the current version, OS, runtime, and program arguments
-            PlatformInformation info = PlatformUtils.GetPlatformInformation();
+            PlatformInformation info = PlatformUtils.GetPlatformInformation(Context.Trace2);
             Context.Trace.WriteLine($"Version: {Constants.GcmVersion}");
             Context.Trace.WriteLine($"Runtime: {info.ClrVersion}");
             Context.Trace.WriteLine($"Platform: {info.OperatingSystemType} ({info.CpuArchitecture})");
             Context.Trace.WriteLine($"OSVersion: {info.OperatingSystemVersion}");
             Context.Trace.WriteLine($"AppPath: {Context.ApplicationPath}");
+            Context.Trace.WriteLine($"InstallDir: {Context.InstallationDirectory}");
             Context.Trace.WriteLine($"Arguments: {string.Join(" ", args)}");
 
             var parser = new CommandLineBuilder(rootCommand)
                 .UseDefaults()
                 .UseExceptionHandler(OnException)
+                .AddMiddleware(NoGuiOptionHandler)
                 .Build();
 
             return await parser.InvokeAsync(args);
@@ -252,23 +265,11 @@ namespace GitCredentialManager
                 }
 
                 // Clear app entry
-                config.UnsetAll(configLevel, helperKey, Regex.Escape(appPath));
+                string appEntryValue = currentValues[appIndex];
+                config.UnsetAll(configLevel, helperKey, Regex.Escape(appEntryValue));
             }
 
             return Task.CompletedTask;
-        }
-
-        private string GetGitConfigAppName()
-        {
-            const string gitCredentialPrefix = "git-credential-";
-
-            string appName = Path.GetFileNameWithoutExtension(Context.ApplicationPath);
-            if (appName != null && appName.StartsWith(gitCredentialPrefix, StringComparison.OrdinalIgnoreCase))
-            {
-                return appName.Substring(gitCredentialPrefix.Length);
-            }
-
-            return Context.ApplicationPath;
         }
 
         private string GetGitConfigAppPath()

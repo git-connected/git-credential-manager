@@ -226,6 +226,41 @@ namespace GitCredentialManager.Interop.Windows.Native
         public static extern bool SetConsoleMode(
             [In] SafeFileHandle consoleHandle,
             [In, MarshalAs(UnmanagedType.U4)] ConsoleMode consoleMode);
+
+        /// <summary>
+        /// Retrieves the command-line string for the current process.
+        /// </summary>
+        /// <returns>The return value is the command-line string for the current process.</returns>
+        [DllImport(LibraryName, CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr GetCommandLine();
+
+        /// <summary>
+        /// Frees the specified local memory object and invalidates its handle.
+        /// </summary>
+        /// <param name="ptr">
+        /// A handle to the local memory object.
+        /// This handle is returned by either the LocalAlloc or LocalReAlloc function.
+        /// It is not safe to free memory allocated with GlobalAlloc.
+        /// </param>
+        /// <returns>
+        /// If the function succeeds, the return value is NULL.
+        /// <para/>
+        /// If the function fails, the return value is equal to a handle to the local memory object.
+        /// <para/>
+        /// To get extended error information, call GetLastError.
+        /// </returns>
+        [DllImport(LibraryName, CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr LocalFree(IntPtr ptr);
+
+        /// <summary>
+        /// Retrieves the window handle used by the console associated with the calling process.
+        /// </summary>
+        /// <returns>
+        /// The return value is a handle to the window used by the console associated with the calling process or
+        /// NULL if there is no such associated console.
+        /// </returns>
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr GetConsoleWindow();
     }
 
     [Flags]

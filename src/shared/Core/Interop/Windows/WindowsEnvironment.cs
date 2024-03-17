@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
 
 namespace GitCredentialManager.Interop.Windows
@@ -9,20 +10,19 @@ namespace GitCredentialManager.Interop.Windows
     public class WindowsEnvironment : EnvironmentBase
     {
         public WindowsEnvironment(IFileSystem fileSystem)
-            : this(fileSystem, GetCurrentVariables()) { }
+            : base(fileSystem) { }
 
         internal WindowsEnvironment(IFileSystem fileSystem, IReadOnlyDictionary<string, string> variables)
-            : base(fileSystem)
-        {
-            EnsureArgument.NotNull(variables, nameof(variables));
-            Variables = variables;
-        }
+            : base(fileSystem, variables) { }
 
         #region EnvironmentBase
 
         protected override string[] SplitPathVariable(string value)
         {
-            return value.Split(';');
+            // Ensure we don't return empty values here - callers may use this as the base
+            // path for `Path.Combine(..)`, for which an empty value means 'current directory'.
+            // We only ever want to use the current directory for path resolution explicitly.
+            return value.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
         }
 
         public override void AddDirectoryToPath(string directoryPath, EnvironmentVariableTarget target)
@@ -45,7 +45,7 @@ namespace GitCredentialManager.Interop.Windows
             Environment.SetEnvironmentVariable("PATH", newValue, target);
 
             // Update the cached PATH variable to the latest value (as well as all other variables)
-            Variables = GetCurrentVariables();
+            Refresh();
         }
 
         public override void RemoveDirectoryFromPath(string directoryPath, EnvironmentVariableTarget target)
@@ -63,47 +63,13 @@ namespace GitCredentialManager.Interop.Windows
                 Environment.SetEnvironmentVariable("PATH", newValue, target);
 
                 // Update the cached PATH variable to the latest value (as well as all other variables)
-                Variables = GetCurrentVariables();
+                Refresh();
             }
-        }
-
-        public override bool TryLocateExecutable(string program, out string path)
-        {
-            // Don't use "where.exe" on Windows as this includes the current working directory
-            // and we don't want to enumerate this location; only the PATH.
-            if (Variables.TryGetValue("PATH", out string pathValue))
-            {
-                string[] paths = SplitPathVariable(pathValue);
-                foreach (var basePath in paths)
-                {
-                    string candidatePath = Path.Combine(basePath, program);
-                    if (FileSystem.FileExists(candidatePath))
-                    {
-                        path = candidatePath;
-                        return true;
-                    }
-                }
-            }
-
-            path = null;
-            return false;
-        }
-
-        public override Process CreateProcess(string path, string args, bool useShellExecute, string workingDirectory)
-        {
-            // If we're asked to start a WSL executable we must launch via the wsl.exe command tool
-            if (!useShellExecute && WslUtils.IsWslPath(path))
-            {
-                string wslPath = WslUtils.ConvertToDistroPath(path, out string distro);
-                return WslUtils.CreateWslProcess(distro, $"{wslPath} {args}", workingDirectory);
-            }
-
-            return base.CreateProcess(path, args, useShellExecute, workingDirectory);
         }
 
         #endregion
 
-        private static IReadOnlyDictionary<string, string> GetCurrentVariables()
+        protected override IReadOnlyDictionary<string, string> GetCurrentVariables()
         {
             // On Windows it is technically possible to get env vars which differ only by case
             // even though the general assumption is that they are case insensitive on Windows.

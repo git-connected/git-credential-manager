@@ -4,8 +4,10 @@ namespace GitCredentialManager.Authentication.OAuth
     public static class OAuth2Constants
     {
         public const string ClientIdParameter = "client_id";
+        public const string ClientSecretParameter = "client_secret";
         public const string RedirectUriParameter = "redirect_uri";
         public const string ScopeParameter = "scope";
+        public const string Trace2Category = "oauth2";
 
         public static class AuthorizationEndpoint
         {

@@ -151,15 +151,19 @@ namespace GitCredentialManager
             var uri = input.GetRemoteUri();
             if (uri is null)
             {
-                throw new Exception("Unable to detect host provider without a remote URL");
+                throw new Trace2Exception(_context.Trace2, "Unable to detect host provider without a remote URL");
             }
+
+            // We can only probe HTTP(S) URLs - for SMTP, IMAP, etc we cannot do network probing
+            bool canProbeUri = StringComparer.OrdinalIgnoreCase.Equals(uri.Scheme, "http") ||
+                               StringComparer.OrdinalIgnoreCase.Equals(uri.Scheme, "https");
 
             var probeTimeout = TimeSpan.FromMilliseconds(_context.Settings.AutoDetectProviderTimeout);
             _context.Trace.WriteLine($"Auto-detect probe timeout is {probeTimeout.TotalSeconds} ms.");
 
             HttpResponseMessage probeResponse = null;
 
-            async Task<IHostProvider> MatchProviderAsync(HostProviderPriority priority)
+            async Task<IHostProvider> MatchProviderAsync(HostProviderPriority priority, bool probe)
             {
                 if (_hostProviders.TryGetValue(priority, out ICollection<IHostProvider> providers))
                 {
@@ -174,7 +178,7 @@ namespace GitCredentialManager
                     // Try matching using the HTTP response from a query to the remote URL (expensive).
                     // The user may have disabled this feature with a zero or negative timeout for performance reasons.
                     // We only probe the remote once and reuse the same response for all providers.
-                    if (probeTimeout.TotalMilliseconds > 0)
+                    if (probe && probeTimeout.TotalMilliseconds > 0)
                     {
                         if (probeResponse is null)
                         {
@@ -215,9 +219,9 @@ namespace GitCredentialManager
             }
 
             // Match providers starting with the highest priority
-            IHostProvider match = await MatchProviderAsync(HostProviderPriority.High) ??
-                                  await MatchProviderAsync(HostProviderPriority.Normal) ??
-                                  await MatchProviderAsync(HostProviderPriority.Low) ??
+            IHostProvider match = await MatchProviderAsync(HostProviderPriority.High, canProbeUri) ??
+                                  await MatchProviderAsync(HostProviderPriority.Normal, canProbeUri) ??
+                                  await MatchProviderAsync(HostProviderPriority.Low, canProbeUri) ??
                                   throw new Exception("No host provider available to service this request.");
 
             // If we ended up making a network call then set the host provider explicitly
@@ -236,8 +240,10 @@ namespace GitCredentialManager
                 }
                 catch (Exception ex)
                 {
-                    _context.Trace.WriteLine("Failed to set host provider!");
+                    var message = "Failed to set host provider!";
+                    _context.Trace.WriteLine(message);
                     _context.Trace.WriteException(ex);
+                    _context.Trace2.WriteError(message);
 
                     _context.Streams.Error.WriteLine("warning: failed to remember result of host provider detection!");
                     _context.Streams.Error.WriteLine($"warning: try setting this manually: `git config --global {keyName} {match.Id}`");

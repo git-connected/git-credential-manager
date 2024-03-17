@@ -18,12 +18,12 @@
 #if InstallTarget == "user"
   #define GcmAppId "{{aa76d31d-432c-42ee-844c-bc0bc801cef3}}"
   #define GcmLongName "Git Credential Manager (User)"
-  #define GcmSetupExe "gcmcoreuser"
+  #define GcmSetupExe "gcmuser"
   #define GcmConfigureCmdArgs ""
 #elif InstallTarget == "system"
   #define GcmAppId "{{fdfae50a-1bc1-4ead-9228-1e1c275e8d12}}"
   #define GcmLongName "Git Credential Manager"
-  #define GcmSetupExe "gcmcore"
+  #define GcmSetupExe "gcm"
   #define GcmConfigureCmdArgs "--system"
 #else
   #error Installer target property 'InstallTarget' must be 'user' or 'system'
@@ -36,10 +36,10 @@
 #define GcmPublisherUrl "https://www.github.com"
 #define GcmCopyright "Copyright (c) GitHub, Inc. and contributors"
 #define GcmUrl "https://aka.ms/gcm"
-#define GcmReadme "https://github.com/GitCredentialManager/git-credential-manager/blob/main/README.md"
+#define GcmReadme "https://github.com/git-ecosystem/git-credential-manager/blob/main/README.md"
 #define GcmRepoRoot "..\..\.."
 #define GcmAssets GcmRepoRoot + "\assets"
-#define GcmExe "git-credential-manager-core.exe"
+#define GcmExe "git-credential-manager.exe"
 #define GcmArch "x86"
 
 #ifnexist PayloadDir + "\" + GcmExe
@@ -52,7 +52,8 @@
 #define VerBuild
 #define VerRevision
 #expr ParseVersion(PayloadDir + "\" + GcmExe, VerMajor, VerMinor, VerBuild, VerRevision)
-#define GcmVersion str(VerMajor) + "." + str(VerMinor) + "." + str(VerBuild) + "." + str(VerRevision)
+#define GcmVersionSimple str(VerMajor) + "." + str(VerMinor) + "." + str(VerBuild)
+#define GcmVersion str(GcmVersionSimple) + "." + str(VerRevision)
 
 [Setup]
 AppId={#GcmAppId}
@@ -68,7 +69,7 @@ AppCopyright={#GcmCopyright}
 AppReadmeFile={#GcmReadme}
 VersionInfoVersion={#GcmVersion}
 LicenseFile={#GcmRepoRoot}\LICENSE
-OutputBaseFilename={#GcmSetupExe}-win-{#GcmArch}-{#GcmVersion}
+OutputBaseFilename={#GcmSetupExe}-win-{#GcmArch}-{#GcmVersionSimple}
 DefaultDirName={autopf}\{#GcmShortName}
 Compression=lzma2
 SolidCompression=yes
@@ -102,35 +103,7 @@ Filename: "{app}\{#GcmExe}"; Parameters: "configure {#GcmConfigureCmdArgs}"; Fla
 Filename: "{app}\{#GcmExe}"; Parameters: "unconfigure {#GcmConfigureCmdArgs}"; Flags: runhidden
 
 [Files]
-Source: "{#PayloadDir}\Atlassian.Bitbucket.dll";                        DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\Atlassian.Bitbucket.UI.exe";                     DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\Atlassian.Bitbucket.UI.exe.config";              DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\Atlassian.Bitbucket.UI.Shared.dll";              DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\git-credential-manager-core.exe";                DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\git-credential-manager-core.exe.config";         DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\GitHub.dll";                                     DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\GitHub.UI.exe";                                  DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\GitHub.UI.exe.config";                           DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\GitHub.UI.Shared.dll";                           DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\GitLab.dll";                                     DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\Microsoft.AzureRepos.dll";                       DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\gcmcore.dll";                                    DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\gcmcoreui.dll";                                  DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\gcmcoreuiwpf.dll";                               DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\Microsoft.Identity.Client.Desktop.dll";          DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\Microsoft.Identity.Client.dll";                  DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\Microsoft.Identity.Client.Extensions.Msal.dll";  DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\Microsoft.Web.WebView2.Core.dll";                DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\Microsoft.Web.WebView2.WinForms.dll";            DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\Microsoft.Web.WebView2.Wpf.dll";                 DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\Newtonsoft.Json.dll";                            DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\NOTICE";                                         DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\System.Buffers.dll";                             DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\System.CommandLine.dll";                         DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\System.Memory.dll";                              DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\System.Numerics.Vectors.dll";                    DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\System.Runtime.CompilerServices.Unsafe.dll";     DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PayloadDir}\WebView2Loader.dll";                             DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 
 [Code]
 // Don't allow installing conflicting architectures
